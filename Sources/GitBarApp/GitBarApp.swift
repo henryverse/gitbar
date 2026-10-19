@@ -85,7 +85,7 @@ struct PanelView: View {
 
             if let busy = model.busy {
                 ProgressView().controlSize(.small)
-                Text(busy).font(.caption).foregroundStyle(.secondary)
+                Text(busy).font(.caption).monospacedDigit().lineLimit(1).foregroundStyle(.secondary)
             }
 
             Button { model.refresh(fetch: true) } label: { Image(systemName: "arrow.clockwise") }

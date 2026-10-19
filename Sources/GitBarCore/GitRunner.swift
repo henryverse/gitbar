@@ -17,7 +17,9 @@ public struct GitRunner: Sendable {
         executable = env["GITBAR_GIT"].flatMap { $0.isEmpty ? nil : $0 } ?? config.gitPath ?? "/usr/bin/git"
     }
 
-    public func run(_ args: [String], in directory: String) throws -> CommandResult {
+    /// With `progress`, git is asked for `--progress` output and each percentage update is
+    /// reported as it arrives; those lines are left out of the returned stderr.
+    public func run(_ args: [String], in directory: String, progress: ProgressHandler? = nil) throws -> CommandResult {
         var sshCommand: String?
         if ProcessInfo.processInfo.environment["GIT_SSH_COMMAND"] == nil,
            ["push", "pull", "fetch", "ls-remote", "clone"].contains(args.first ?? "") {
@@ -26,10 +28,13 @@ public struct GitRunner: Sendable {
             let base = configured.flatMap { $0.status == 0 ? $0.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil }
             sshCommand = (base?.isEmpty == false ? base! : "ssh") + " -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
         }
-        return try spawn(args, in: directory, sshCommand: sshCommand)
+        var args = args
+        if progress != nil, !args.isEmpty { args.insert("--progress", at: 1) }
+        return try spawn(args, in: directory, sshCommand: sshCommand, progress: progress)
     }
 
-    private func spawn(_ args: [String], in directory: String, sshCommand: String?) throws -> CommandResult {
+    private func spawn(_ args: [String], in directory: String, sshCommand: String?,
+                       progress: ProgressHandler? = nil) throws -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
@@ -68,7 +73,11 @@ public struct GitRunner: Sendable {
             outData = outPipe.fileHandleForReading.readDataToEndOfFile()
             group.leave()
         }
-        errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        if let progress {
+            errData = Self.readProgress(errPipe.fileHandleForReading, progress)
+        } else {
+            errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        }
         group.wait()
         process.waitUntilExit()
 
@@ -77,10 +86,32 @@ public struct GitRunner: Sendable {
                              stderr: String(decoding: errData, as: UTF8.self))
     }
 
+    /// Reads stderr as it arrives. git redraws progress with `\r`; those redraws go to `handler`
+    /// and are dropped, while `\n`-terminated lines (including each phase's final ", done.") are kept.
+    private static func readProgress(_ handle: FileHandle, _ handler: ProgressHandler) -> Data {
+        var kept = Data(), pending = Data()
+        func emit(_ segment: Data) {
+            if let p = TransferProgress.parse(String(decoding: segment, as: UTF8.self)) { handler(p) }
+        }
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty { break }
+            pending.append(chunk)
+            while let i = pending.firstIndex(where: { $0 == 0x0D || $0 == 0x0A }) {
+                let segment = pending[pending.startIndex..<i]
+                emit(segment)
+                if pending[i] == 0x0A { kept.append(segment); kept.append(0x0A) }
+                pending.removeSubrange(pending.startIndex...i)
+            }
+        }
+        kept.append(pending)
+        return kept
+    }
+
     /// Runs git and throws a classified `GitBarError` on non-zero exit. Returns raw stdout.
     @discardableResult
-    public func checked(_ args: [String], in directory: String) throws -> CommandResult {
-        let result = try run(args, in: directory)
+    public func checked(_ args: [String], in directory: String, progress: ProgressHandler? = nil) throws -> CommandResult {
+        let result = try run(args, in: directory, progress: progress)
         guard result.status == 0 else { throw GitRunner.classify(result, args: args) }
         return result
     }

@@ -142,6 +142,13 @@ func log(_ project: Project, _ action: String, _ body: () throws -> String) thro
     }
 }
 
+/// Live transfer progress on stderr, only when it's a terminal (agents and pipes see nothing; stdout stays clean).
+func withProgress<T>(_ body: (ProgressHandler?) throws -> T) rethrows -> T {
+    guard isatty(STDERR_FILENO) != 0 else { return try body(nil) }
+    defer { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
+    return try body { p in FileHandle.standardError.write(Data("\r\u{1B}[K\(p.summary)".utf8)) }
+}
+
 func strategy(_ inv: Invocation) throws -> PullStrategy? {
     guard let raw = inv.value("--strategy") else { return nil }
     guard let s = PullStrategy(rawValue: raw) else {
@@ -220,8 +227,10 @@ func run(_ inv: Invocation, _ out: Output) throws {
         let p = try project()
         var result: PushResult!
         try log(p, "push") {
-            result = try Repo(project: p, config: config).push(remote: inv.value("--remote"),
-                                                                forceWithLease: inv.flag("--force-with-lease"))
+            result = try withProgress {
+                try Repo(project: p, config: config).push(remote: inv.value("--remote"),
+                                                          forceWithLease: inv.flag("--force-with-lease"), progress: $0)
+            }
             return result.summary
         }
         out.success(name, result) { result.summary }
@@ -230,7 +239,10 @@ func run(_ inv: Invocation, _ out: Output) throws {
         let p = try project()
         var result: PullResult!
         try log(p, "pull") {
-            result = try Repo(project: p, config: config).pull(strategy: try strategy(inv), remote: inv.value("--remote"))
+            let strat = try strategy(inv)
+            result = try withProgress {
+                try Repo(project: p, config: config).pull(strategy: strat, remote: inv.value("--remote"), progress: $0)
+            }
             return result.summary
         }
         out.success(name, result) { result.summary }
@@ -239,8 +251,11 @@ func run(_ inv: Invocation, _ out: Output) throws {
         let p = try project()
         var result: SyncResult!
         try log(p, "sync") {
-            result = try Repo(project: p, config: config).sync(message: inv.value("--message"),
-                                                                strategy: try strategy(inv), stageAll: try stageAll(inv))
+            let strat = try strategy(inv), all = try stageAll(inv)
+            result = try withProgress {
+                try Repo(project: p, config: config).sync(message: inv.value("--message"),
+                                                          strategy: strat, stageAll: all, progress: $0)
+            }
             return result.summary
         }
         out.success(name, result) { [result.commit?.summary ?? "Nothing to commit.", result.pull?.summary, result.push.summary]

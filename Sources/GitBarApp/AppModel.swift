@@ -92,19 +92,20 @@ final class AppModel: ObservableObject {
 
     func commit() {
         let message = commitMessage
-        perform("commit", "Committing…") { try $0.commit(message: message).summary }
+        perform("commit", "Committing…") { repo, _ in try repo.commit(message: message).summary }
     }
 
-    func push() { perform("push", "Pushing…") { try $0.push().summary } }
-    func pull() { perform("pull", "Pulling…") { try $0.pull().summary } }
-    func abort() { perform("abort", "Aborting…") { "Aborted \(try $0.abort().aborted)." } }
+    func push() { perform("push", "Pushing…") { try $0.push(progress: $1).summary } }
+    func pull() { perform("pull", "Pulling…") { try $0.pull(progress: $1).summary } }
+    func abort() { perform("abort", "Aborting…") { repo, _ in "Aborted \(try repo.abort().aborted)." } }
 
     func sync() {
         let message = commitMessage
-        perform("sync", "Syncing…") { try $0.sync(message: message).summary }
+        perform("sync", "Syncing…") { try $0.sync(message: message, progress: $1).summary }
     }
 
-    private func perform(_ action: String, _ label: String, _ op: @escaping @Sendable (Repo) throws -> String) {
+    private func perform(_ action: String, _ label: String,
+                         _ op: @escaping @Sendable (Repo, @escaping ProgressHandler) throws -> String) {
         guard let project, busy == nil else { return }
         busy = label
         banner = nil
@@ -112,7 +113,11 @@ final class AppModel: ObservableObject {
         Task.detached {
             let repo = Repo(project: project, config: config)
             let outcome: Result<String, GitBarError>
-            do { outcome = .success(try op(repo)) }
+            // Main queue (not a Task) so updates stay in order and land before the completion below.
+            let progress: ProgressHandler = { p in
+                DispatchQueue.main.async { MainActor.assumeIsolated { if self.busy != nil { self.busy = p.summary } } }
+            }
+            do { outcome = .success(try op(repo, progress)) }
             catch let e as GitBarError { outcome = .failure(e) }
             catch { outcome = .failure(GitBarError(code: "error", message: error.localizedDescription)) }
             switch outcome {

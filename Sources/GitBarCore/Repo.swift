@@ -227,7 +227,8 @@ public struct Repo: Sendable {
 
     // MARK: Push / Pull
 
-    public func push(remote: String? = nil, forceWithLease: Bool = false) throws -> PushResult {
+    public func push(remote: String? = nil, forceWithLease: Bool = false,
+                     progress: ProgressHandler? = nil) throws -> PushResult {
         let st = try status()
         let branch = try requireBranch(st)
         guard !st.remotes.isEmpty else { throw noRemote() }
@@ -247,14 +248,15 @@ public struct Repo: Sendable {
             args += ["-u", target, branch]
             setUpstream = st.upstream == nil
         }
-        let r = try git.checked(args, in: path)
+        let r = try git.checked(args, in: path, progress: progress)
         let output = (r.stderr + r.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
         return PushResult(remote: target, branch: branch, setUpstream: setUpstream,
                           commitsPushed: st.upstream == nil ? nil : st.ahead,
                           upToDate: output.contains("Everything up-to-date"), output: output)
     }
 
-    public func pull(strategy: PullStrategy? = nil, remote: String? = nil) throws -> PullResult {
+    public func pull(strategy: PullStrategy? = nil, remote: String? = nil,
+                     progress: ProgressHandler? = nil) throws -> PullResult {
         let st = try status()
         let branch = try requireBranch(st)
         guard !st.remotes.isEmpty else { throw noRemote() }
@@ -269,7 +271,7 @@ public struct Repo: Sendable {
         } else {
             target = try? git.output(["config", "branch.\(branch).remote"], in: path)
         }
-        let r = try git.checked(args, in: path)
+        let r = try git.checked(args, in: path, progress: progress)
         let after = try? git.output(["rev-parse", "HEAD"], in: path)
         let updated = before != after
         var count = 0
@@ -284,18 +286,19 @@ public struct Repo: Sendable {
     }
 
     /// Commit everything (if there's anything), pull, then push.
-    public func sync(message: String?, strategy: PullStrategy? = nil, stageAll: Bool? = nil) throws -> SyncResult {
+    public func sync(message: String?, strategy: PullStrategy? = nil, stageAll: Bool? = nil,
+                     progress: ProgressHandler? = nil) throws -> SyncResult {
         var commit: CommitResult?
         do {
             commit = try self.commit(message: message, stageAll: stageAll)
         } catch let e as GitBarError where e.code == "nothing_to_commit" {}
         var pull: PullResult?
         do {
-            pull = try self.pull(strategy: strategy ?? config.syncPullStrategy)
+            pull = try self.pull(strategy: strategy ?? config.syncPullStrategy, progress: progress)
         } catch let e as GitBarError where e.code == "no_upstream" {
             // New branch: nothing on the remote to pull yet; push will create it.
         }
-        return SyncResult(commit: commit, pull: pull, push: try push())
+        return SyncResult(commit: commit, pull: pull, push: try push(progress: progress))
     }
 
     // MARK: Remotes
