@@ -55,6 +55,8 @@ struct PanelView: View {
         }
         .padding(14)
         .frame(width: 360)
+        // Size the MenuBarExtra window to the content's ideal height; otherwise it can end up taller than the content.
+        .fixedSize(horizontal: false, vertical: true)
         .onAppear { model.reloadConfig(); model.refresh() }
     }
 
@@ -199,7 +201,7 @@ struct PanelView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: min(CGFloat(st.changes.count) * 18 + 4, 150))
+                .frame(height: min(CGFloat(st.changes.count) * 18 + 4, 150))
             }
         }
     }
